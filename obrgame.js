@@ -21,13 +21,16 @@ const ObrGame = mongoose.model('ObrGame', new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
   status: { type: String, required: true, maxlength: 20 },
   result: { type: String, required: false, maxlength: 20 },
+  rounds: { type: Number, required: true },
+  currentRound: { type: Number, default: 0 },
 }));
 
 const userSessions = {};
+const userLocations = {};
 
 bot.telegram.setMyCommands([
-  { command: 'start', description: 'Запустити бота' },
-  { command: 'caught', description: 'Позначити себе як спійманого' }
+  { command: 'caught', description: 'Позначити себе як спійманого' },
+  { command: 'create_obrgame', description: 'Створити гру' }
 ]);
 
 bot.start(async (ctx) => {
@@ -120,7 +123,8 @@ bot.on('text', async (ctx) => {
       startDate: session.startDate,
       duration: session.duration,
       prize,
-      status: 'created'
+      status: 'created',
+      rounds: session.duration/5
     });
     delete userSessions[userId];
 
@@ -133,9 +137,28 @@ bot.on('text', async (ctx) => {
       `🔗 Доєднатися: ${inviteLink}\n\n` +
       `📢 Запросіть друзів, щоб вони також взяли участь! Більше гравців – цікавіша гра! 🎯`
     );
+
+    ctx.reply('📍 Щоб брати участь у грі, дозвольте доступ до вашої геолокації! Натисніть кнопку нижче:', {
+      reply_markup: {
+        keyboard: [[{ text: '📍 Надіслати локацію', request_location: true }]],
+        one_time_keyboard: true,
+        resize_keyboard: true
+      }
+    });
   }
 });
 
+bot.on('location', (ctx) => {
+  const userId = ctx.from.id;
+  const location = ctx.message.location;
+
+  userLocations[userId] = {
+    latitude: location.latitude,
+    longitude: location.longitude
+  };
+
+  ctx.reply('✅ Ваша геолокація отримана! Ми будемо оновлювати ваше місцезнаходження кожні 5 хвилин.');
+});
 
 bot.command("join", async (ctx) => {
   const args = ctx.message.text.split(" ");
@@ -171,20 +194,38 @@ cron.schedule('* * * * *', async () => {
   for (let game of gamesToStart) {
     game.status = 'processed';
     game.endDate = moment.tz(game.startDate, userTimeZone).add(game.duration, "minutes").toDate();
+    game.currentRound = 1;
     await game.save();
     startGame(game);
   }
 
-  const gamesToEnd = await ObrGame.find({
-    status: 'processed',
-    endDate: { $lte: now }
-  });
+  const activeGames = await ObrGame.find({ status: 'processed' });
 
-  for (let game of gamesToEnd) {
-    game.status = 'ended';
-    game.result = 'sponsor-win';
-    await game.save();
-    endGame(game);
+  for (let game of activeGames) {
+    if (game.endDate <= now) {
+      game.status = 'ended';
+      game.result = 'sponsor-win';
+      await game.save();
+      endGame(game);
+      continue;
+    }
+
+    const nextRoundTime = moment.tz(game.startDate, userTimeZone).add(game.currentRound * 1, "minutes").toDate();
+
+    if (nextRoundTime <= now) {
+      game.currentRound += 1;
+      await game.save();
+
+      const sponsorLocation = userLocations[game.sponsorId];
+      if (sponsorLocation) {
+        for (let hunterId of game.hunters) {
+          bot.telegram.sendMessage(
+              hunterId,
+              `📍 Нова підказка!\nСпонсор зараз знаходиться тут:\n🌍 Широта: ${sponsorLocation.latitude}\n🌏 Довгота: ${sponsorLocation.longitude}\n\nПродовжуйте пошуки!`
+          );
+        }
+      }
+    }
   }
 });
 
