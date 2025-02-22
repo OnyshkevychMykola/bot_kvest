@@ -15,8 +15,7 @@ const ObrGame = mongoose.model('ObrGame', new mongoose.Schema({
   name: { type: String, required: true, maxlength: 20 },
   startDate: { type: Date, required: true },
   endDate: { type: Date, required: false },
-  //duration: { type: Number, required: true, min: 30, max: 120 },
-  duration: { type: Number, required: true, min: 1, max: 120 },
+  duration: { type: Number, required: true, min: 30, max: 120 },
   prize: { type: Number, required: true, min: 50, max: 1000 },
   hunters: { type: [Number], default: [] },
   createdAt: { type: Date, default: Date.now },
@@ -93,10 +92,18 @@ bot.on('text', async (ctx) => {
   }
 
   if (session.step === 'awaiting_start_date') {
-    const date = moment.tz(ctx.message.text, "YYYY-MM-DD HH:mm", userTimeZone).toDate();
-    // if (isNaN(date.getTime())) {
-    //   return ctx.reply('Невірний формат дати. Введіть у форматі YYYY-MM-DD HH:MM');
-    // }
+    if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(ctx.message.text)) {
+      return ctx.reply('Невірний формат. Використовуйте: YYYY-MM-DD HH:MM');
+    }
+
+    const date = moment.tz(ctx.message.text, "YYYY-MM-DD HH:mm", userTimeZone);
+    if (!date.isValid()) {
+      return ctx.reply('Невірна дата. Перевірте, чи існує така дата (наприклад, 30 лютого – некоректно).');
+    }
+
+    if (date.isBefore(moment())) {
+      return ctx.reply('Дата вже минула. Введіть майбутній час.');
+    }
     session.startDate = date;
     session.step = 'awaiting_duration';
     return ctx.reply('Вкажіть тривалість гри (від 30 до 120 хв, кратно 10 хв):');
@@ -104,9 +111,9 @@ bot.on('text', async (ctx) => {
 
   if (session.step === 'awaiting_duration') {
     const duration = parseInt(ctx.message.text);
-    // if (isNaN(duration) || duration < 30 || duration > 120 || duration % 10 !== 0) {
-    //   return ctx.reply('Невірна тривалість. Вкажіть число від 30 до 120, кратне 10 хв');
-    // }
+    if (isNaN(duration) || duration < 30 || duration > 120 || duration % 10 !== 0) {
+      return ctx.reply('Невірна тривалість. Вкажіть число від 30 до 120, кратне 10 хв');
+    }
     session.duration = duration;
     session.step = 'awaiting_prize';
     return ctx.reply('Вкажіть суму призу (від 50 до 1000 грн, кратно 50 грн):');
