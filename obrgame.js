@@ -8,6 +8,7 @@ const bot = new Telegraf(process.env.BOT_TOKEN);
 mongoose.connect(process.env.MONGO_URI);
 
 const userTimeZone = 'Europe/Kyiv';
+const MINUTES_INTERVAL = 1;
 
 const ObrGame = mongoose.model('ObrGame', new mongoose.Schema({
   sponsorId: { type: Number, required: true },
@@ -124,7 +125,7 @@ bot.on('text', async (ctx) => {
       duration: session.duration,
       prize,
       status: 'created',
-      rounds: session.duration/5
+      rounds: session.duration/MINUTES_INTERVAL
     });
     delete userSessions[userId];
 
@@ -210,7 +211,7 @@ cron.schedule('* * * * *', async () => {
       continue;
     }
 
-    const nextRoundTime = moment.tz(game.startDate, userTimeZone).add(game.currentRound * 1, "minutes").toDate();
+    const nextRoundTime = moment.tz(game.startDate, userTimeZone).add(game.currentRound * MINUTES_INTERVAL, "minutes").toDate();
 
     if (nextRoundTime <= now) {
       game.currentRound += 1;
@@ -218,10 +219,11 @@ cron.schedule('* * * * *', async () => {
 
       const sponsorLocation = userLocations[game.sponsorId];
       if (sponsorLocation) {
-        for (let hunterId of game.hunters) {
+        for (let hunterId of [...game.hunters, game.sponsorId]) {
+          bot.telegram.sendLocation(hunterId, sponsorLocation.latitude, sponsorLocation.longitude);
           bot.telegram.sendMessage(
               hunterId,
-              `📍 Нова підказка!\nСпонсор зараз знаходиться тут:\n🌍 Широта: ${sponsorLocation.latitude}\n🌏 Довгота: ${sponsorLocation.longitude}\n\nПродовжуйте пошуки!`
+              `📍 Спонсор зараз знаходиться тут!\nПродовжуйте пошуки!`
           );
         }
       }
