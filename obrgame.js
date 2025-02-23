@@ -260,7 +260,7 @@ async function sendSponsorLocation(game) {
     return false;
   }
 
-  for (let hunterId of [...game.hunters, game.sponsorId]) {
+  for (let hunterId of game.hunters) {
     bot.telegram.sendLocation(hunterId, sponsorLocation.latitude, sponsorLocation.longitude);
     bot.telegram.sendMessage(
         hunterId,
