@@ -3,12 +3,30 @@ const cron = require('node-cron');
 const { Telegraf } = require('telegraf');
 const mongoose = require('mongoose');
 const moment = require('moment-timezone');
-const bot = new Telegraf(process.env.BOT_TOKEN);
 
-mongoose.connect(process.env.MONGO_URI);
-
+const token = process.env.BOT_TOKEN;
+const dbUri = process.env.MONGO_URI;
+const botName = process.env.BOT_USERNAME;
 const userTimeZone = 'Europe/Kyiv';
-const MINUTES_INTERVAL = 1;
+const MINUTES_INTERVAL = 5;
+
+const GAME_STATUSES = {
+  CREATED: 'created',
+  ENDED: 'ended',
+  PROCESSED: 'processed',
+}
+
+const GAME_RESULTS = {
+  HUNTERS_WIN: 'hunters-win',
+  SPONSOR_WIN: 'sponsor-win',
+  DISQUALIFICATION: 'sponsor-disqualified',
+}
+
+const { CREATED, ENDED, PROCESSED} = GAME_STATUSES;
+const { HUNTERS_WIN, DISQUALIFICATION, SPONSOR_WIN } = GAME_RESULTS;
+
+const bot = new Telegraf(token);
+mongoose.connect(dbUri);
 
 const ObrGame = mongoose.model('ObrGame', new mongoose.Schema({
   sponsorId: { type: Number, required: true },
@@ -52,15 +70,15 @@ bot.command("caught", async (ctx) => {
   const sponsorId = ctx.from.id;
   const activeGame = await ObrGame.findOne({
     sponsorId,
-    status: "processed",
+    status: PROCESSED,
   });
 
   if (!activeGame) {
     return ctx.reply("Ви не є спонсором активної гри або гра вже завершена.");
   }
 
-  activeGame.status = "ended";
-  activeGame.result = "hunters-win";
+  activeGame.status = ENDED;
+  activeGame.result = HUNTERS_WIN;
   await activeGame.save();
 
   bot.telegram.sendMessage(
@@ -131,12 +149,12 @@ bot.on('text', async (ctx) => {
       startDate: session.startDate,
       duration: session.duration,
       prize,
-      status: 'created',
+      status: CREATED,
       rounds: session.duration/MINUTES_INTERVAL
     });
     delete userSessions[userId];
 
-    const inviteLink = `https://t.me/${process.env.BOT_USERNAME}?start=join_${game._id}`;
+    const inviteLink = `https://t.me/${botName}?start=join_${game._id}`;
     ctx.reply(
       `🎉 Гра "${game.name}" успішно створена!\n\n` +
       `📅 Початок: ${new Date(game.startDate).toLocaleString()}\n` +
@@ -197,41 +215,25 @@ cron.schedule('* * * * *', async () => {
 
   const gamesToStart = await ObrGame.find({
     startDate: { $lte: now },
-    status: 'created'
+    status: CREATED
   });
   for (let game of gamesToStart) {
-    game.status = 'processed';
+    game.status = PROCESSED;
     game.endDate = moment.tz(game.startDate, userTimeZone).add(game.duration, "minutes").toDate();
     game.currentRound = 1;
     await game.save();
     startGame(game);
-
-    const sponsorLocation = userLocations[game.sponsorId];
-
-    if (!sponsorLocation) {
-      game.status = 'ended';
-      game.result = 'sponsor-disqualified';
-      await game.save();
-
-      endGameDueToDisqualification(game);
+    if (!sendSponsorLocation(game)) {
       continue;
-    }
-
-    for (let hunterId of [...game.hunters, game.sponsorId]) {
-      bot.telegram.sendLocation(hunterId, sponsorLocation.latitude, sponsorLocation.longitude);
-      bot.telegram.sendMessage(
-          hunterId,
-          `📍 Спонсор зараз знаходиться тут!\nПродовжуйте пошуки!`
-      );
     }
   }
 
-  const activeGames = await ObrGame.find({ status: 'processed' });
+  const activeGames = await ObrGame.find({ status: PROCESSED });
 
   for (let game of activeGames) {
     if (game.endDate <= now) {
-      game.status = 'ended';
-      game.result = 'sponsor-win';
+      game.status = ENDED;
+      game.result = SPONSOR_WIN;
       await game.save();
       endGame(game);
       continue;
@@ -242,28 +244,32 @@ cron.schedule('* * * * *', async () => {
     if (nextRoundTime <= now) {
       game.currentRound += 1;
       await game.save();
-
-      const sponsorLocation = userLocations[game.sponsorId];
-
-      if (!sponsorLocation) {
-        game.status = 'ended';
-        game.result = 'sponsor-disqualified';
-        await game.save();
-
-        endGameDueToDisqualification(game);
-        continue;
-      }
-
-      for (let hunterId of [...game.hunters, game.sponsorId]) {
-        bot.telegram.sendLocation(hunterId, sponsorLocation.latitude, sponsorLocation.longitude);
-        bot.telegram.sendMessage(
-            hunterId,
-            `📍 Спонсор зараз знаходиться тут!\nПродовжуйте пошуки!`
-        );
-      }
+      sendSponsorLocation(game);
     }
   }
 });
+
+async function sendSponsorLocation(game) {
+  const sponsorLocation = userLocations[game.sponsorId];
+
+  if (!sponsorLocation) {
+    game.status = ENDED;
+    game.result = DISQUALIFICATION;
+    await game.save();
+    endGameDueToDisqualification(game);
+    return false;
+  }
+
+  for (let hunterId of [...game.hunters, game.sponsorId]) {
+    bot.telegram.sendLocation(hunterId, sponsorLocation.latitude, sponsorLocation.longitude);
+    bot.telegram.sendMessage(
+        hunterId,
+        `📍 Спонсор зараз знаходиться тут!\nПродовжуйте пошуки!`
+    );
+  }
+
+  return true;
+}
 
 function startGame(game) {
   bot.telegram.sendMessage(game.sponsorId, `🎮 Гра "${game.name}" розпочалась!
