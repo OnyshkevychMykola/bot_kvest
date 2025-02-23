@@ -205,6 +205,25 @@ cron.schedule('* * * * *', async () => {
     game.currentRound = 1;
     await game.save();
     startGame(game);
+
+    const sponsorLocation = userLocations[game.sponsorId];
+
+    if (!sponsorLocation) {
+      game.status = 'ended';
+      game.result = 'sponsor-disqualified';
+      await game.save();
+
+      endGameDueToDisqualification(game);
+      continue;
+    }
+
+    for (let hunterId of [...game.hunters, game.sponsorId]) {
+      bot.telegram.sendLocation(hunterId, sponsorLocation.latitude, sponsorLocation.longitude);
+      bot.telegram.sendMessage(
+          hunterId,
+          `📍 Спонсор зараз знаходиться тут!\nПродовжуйте пошуки!`
+      );
+    }
   }
 
   const activeGames = await ObrGame.find({ status: 'processed' });
@@ -225,14 +244,22 @@ cron.schedule('* * * * *', async () => {
       await game.save();
 
       const sponsorLocation = userLocations[game.sponsorId];
-      if (sponsorLocation) {
-        for (let hunterId of [...game.hunters, game.sponsorId]) {
-          bot.telegram.sendLocation(hunterId, sponsorLocation.latitude, sponsorLocation.longitude);
-          bot.telegram.sendMessage(
-              hunterId,
-              `📍 Спонсор зараз знаходиться тут!\nПродовжуйте пошуки!`
-          );
-        }
+
+      if (!sponsorLocation) {
+        game.status = 'ended';
+        game.result = 'sponsor-disqualified';
+        await game.save();
+
+        endGameDueToDisqualification(game);
+        continue;
+      }
+
+      for (let hunterId of [...game.hunters, game.sponsorId]) {
+        bot.telegram.sendLocation(hunterId, sponsorLocation.latitude, sponsorLocation.longitude);
+        bot.telegram.sendMessage(
+            hunterId,
+            `📍 Спонсор зараз знаходиться тут!\nПродовжуйте пошуки!`
+        );
       }
     }
   }
@@ -257,7 +284,16 @@ function endGame(game) {
 На жаль, ви не змогли впіймати спонсора цього разу.`);
   }
 
-  game.isActive = false;
+  game.save();
+}
+
+function endGameDueToDisqualification(game) {
+  bot.telegram.sendMessage(game.sponsorId, `❌ Ви були дискваліфіковані у грі "${game.name}" через невказану локацію.`);
+
+  for (let hunterId of game.hunters) {
+    bot.telegram.sendMessage(hunterId, `🏆 Вітаємо! Гра "${game.name}" завершена, і ви перемогли, оскільки спонсор був дискваліфікований.`);
+  }
+
   game.save();
 }
 
