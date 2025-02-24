@@ -302,6 +302,25 @@ bot.on('text', async (ctx) => {
   }
 });
 
+bot.on('edited_message', (ctx) => {
+  if (ctx.editedMessage.location) {
+    const userId = ctx.editedMessage.from.id;
+    const newLocation = {
+      latitude: ctx.editedMessage.location.latitude,
+      longitude: ctx.editedMessage.location.longitude
+    };
+
+    if (
+      !userLocations[userId] ||
+      userLocations[userId].latitude !== newLocation.latitude ||
+      userLocations[userId].longitude !== newLocation.longitude
+    ) {
+      userLocations[userId] = newLocation;
+      console.log(`🔄 Локація користувача ${userId} оновлена:`, newLocation);
+    }
+  }
+});
+
 bot.on('location', (ctx) => {
   const userId = ctx.from.id;
   const location = ctx.message.location;
