@@ -120,9 +120,7 @@ bot.command("caught", async (ctx) => {
     return ctx.reply("Ви не є спонсором активної гри або гра вже завершена.");
   }
 
-  activeGame.status = ENDED;
-  activeGame.result = HUNTERS_WIN;
-  await activeGame.save();
+  await disableGame(activeGame, HUNTERS_WIN);
 
   bot.telegram.sendMessage(
     sponsorId,
@@ -210,9 +208,7 @@ bot.action(/^cancel_game_(.*)$/, async (ctx) => {
       return ctx.reply('Гру не знайдено або ви не маєте прав для її скасування.');
     }
 
-    activeGame.status = ENDED;
-    activeGame.result = CANCELLED;
-    await activeGame.save();
+    await disableGame(activeGame, CANCELLED);
 
     ctx.editMessageText(`Гра "${activeGame.name}" була скасована.`);
   } catch (error) {
@@ -368,6 +364,21 @@ async function handleJoinGame(ctx, gameId) {
   }
 }
 
+async function disableGame(game, result) {
+  if (!game) {
+    throw new Error("Game object is required");
+  }
+
+  game.status = ENDED;
+  game.result = result;
+  game.sponsorId = 1;
+  game.hunters = [];
+
+  await game.save();
+  return game;
+}
+
+
 cron.schedule('* * * * *', async () => {
   const now = moment.tz(userTimeZone).toDate();
 
@@ -390,9 +401,7 @@ cron.schedule('* * * * *', async () => {
 
   for (let game of activeGames) {
     if (game.endDate <= now) {
-      game.status = ENDED;
-      game.result = SPONSOR_WIN;
-      await game.save();
+      await disableGame(game, SPONSOR_WIN);
       endGame(game);
       continue;
     }
@@ -411,9 +420,7 @@ async function sendSponsorLocation(game) {
   const sponsorLocation = userLocations[game.sponsorId];
 
   if (!sponsorLocation) {
-    game.status = ENDED;
-    game.result = DISQUALIFICATION;
-    await game.save();
+    await disableGame(game, DISQUALIFICATION);
     endGameDueToDisqualification(game);
     return false;
   }
