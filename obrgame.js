@@ -1,6 +1,6 @@
 require('dotenv').config();
 const cron = require('node-cron');
-const { Telegraf } = require('telegraf');
+const { Telegraf, Markup} = require('telegraf');
 const mongoose = require('mongoose');
 const moment = require('moment-timezone');
 
@@ -20,10 +20,11 @@ const GAME_RESULTS = {
   HUNTERS_WIN: 'hunters-win',
   SPONSOR_WIN: 'sponsor-win',
   DISQUALIFICATION: 'sponsor-disqualified',
+  CANCELLED: 'cancelled',
 }
 
 const { CREATED, ENDED, PROCESSED} = GAME_STATUSES;
-const { HUNTERS_WIN, DISQUALIFICATION, SPONSOR_WIN } = GAME_RESULTS;
+const { HUNTERS_WIN, DISQUALIFICATION, SPONSOR_WIN, CANCELLED } = GAME_RESULTS;
 
 const bot = new Telegraf(token);
 mongoose.connect(dbUri);
@@ -39,7 +40,6 @@ const ObrGame = mongoose.model('ObrGame', new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
   status: { type: String, required: true, maxlength: 20 },
   result: { type: String, required: false, maxlength: 20 },
-  rounds: { type: Number, required: true },
   currentRound: { type: Number, default: 0 },
 }));
 
@@ -49,6 +49,7 @@ const userLocations = {};
 bot.telegram.setMyCommands([
   { command: 'caught', description: 'Позначити себе як спійманого' },
   { command: 'create_obrgame', description: 'Створити гру' },
+  { command: 'planned_game', description: 'Переглянути заплановану гру' },
   { command: 'help', description: 'Правила гри' }
 ]);
 
@@ -77,9 +78,35 @@ bot.hears('/help', (ctx) => {
   `, { parse_mode: 'Markdown' });
 });
 
-bot.command('create_obrgame', (ctx) => {
-  ctx.reply('Введіть назву гри (не більше 20 символів):');
-  userSessions[ctx.from.id] = { step: 'awaiting_obrgame_name', sponsorId: ctx.from.id };
+bot.command('create_obrgame', async (ctx) => {
+  try {
+    const userId = ctx.from.id;
+
+    const existingGameAsSponsor = await ObrGame.findOne({
+      sponsorId: userId,
+      status: { $in: ['created', 'processed'] },
+    });
+
+    if (existingGameAsSponsor) {
+      return ctx.reply('Ви вже створили гру, яка ще не завершена. Ви не можете створити нову гру, поки попередня не буде завершена.');
+    }
+
+    const existingGameAsHunter = await ObrGame.findOne({
+      hunters: { $elemMatch: { $eq: userId } },
+      status: { $in: ['created', 'processed'] },
+    });
+
+    if (existingGameAsHunter) {
+      return ctx.reply('Ви вже берете участь в іншій активній грі як мисливець. Ви не можете створити нову гру, поки не завершите поточну.');
+    }
+
+    ctx.reply('Введіть назву гри (не більше 20 символів):');
+    userSessions[userId] = { step: 'awaiting_obrgame_name', sponsorId: userId };
+
+  } catch (error) {
+    console.error('Помилка при перевірці наявних ігор:', error);
+    ctx.reply('Виникла помилка при перевірці вашої гри. Спробуйте пізніше.');
+  }
 });
 
 bot.command("caught", async (ctx) => {
@@ -93,9 +120,7 @@ bot.command("caught", async (ctx) => {
     return ctx.reply("Ви не є спонсором активної гри або гра вже завершена.");
   }
 
-  activeGame.status = ENDED;
-  activeGame.result = HUNTERS_WIN;
-  await activeGame.save();
+  await disableGame(activeGame, HUNTERS_WIN);
 
   bot.telegram.sendMessage(
     sponsorId,
@@ -107,6 +132,88 @@ bot.command("caught", async (ctx) => {
       hunterId,
       `🏆 Вітаємо! Ви спіймали спонсора у грі "${activeGame.name}". Перемога за мисливцями!`
     );
+  }
+});
+
+bot.command('planned_game', async (ctx) => {
+  try {
+    const userId = ctx.from.id;
+
+    const activeGame = await ObrGame.findOne({
+      $or: [
+        { sponsorId: userId, status: 'created' },
+        { hunters: { $elemMatch: { $eq: userId } }, status: 'created' }
+      ]
+    });
+
+    if (!activeGame) {
+      return ctx.reply('У вас немає запланованих ігор.');
+    }
+
+    if (activeGame.sponsorId === userId) {
+      return ctx.reply(
+        `Ваша запланована гра: ${activeGame.name}`,
+        Markup.inlineKeyboard([
+          Markup.button.callback('Скасувати гру', `cancel_game_${activeGame._id}`)
+        ])
+      );
+    }
+
+    if (activeGame.hunters.includes(userId)) {
+      return ctx.reply(
+        `Ви є мисливцем в грі: ${activeGame.name}`,
+        Markup.inlineKeyboard([
+          Markup.button.callback('Від’єднатися від гри', `leave_game_${activeGame._id}`)
+        ])
+      );
+    }
+
+  } catch (error) {
+    console.error('Помилка при отриманні запланованої гри:', error);
+    ctx.reply('Виникла помилка при перевірці запланованої гри. Спробуйте пізніше.');
+  }
+});
+
+bot.action(/^leave_game_(.*)$/, async (ctx) => {
+  try {
+    const gameId = ctx.match[1];
+    const userId = ctx.from.id;
+
+    const activeGame = await ObrGame.findById(gameId);
+    if (!activeGame) {
+      return ctx.reply('Гра не знайдена.');
+    }
+
+    if (!activeGame.hunters.includes(userId)) {
+      return ctx.reply('Ви не є мисливцем в цій грі.');
+    }
+
+    activeGame.hunters = activeGame.hunters.filter(hunter => hunter !== userId);
+    await activeGame.save();
+
+    ctx.editMessageText(`Ви успішно від’єдналися від гри: "${activeGame.name}".`);
+
+  } catch (error) {
+    console.error('Помилка при від’єднанні від гри:', error);
+    ctx.reply('Не вдалося від’єднатися від гри. Спробуйте пізніше.');
+  }
+});
+
+bot.action(/^cancel_game_(.*)$/, async (ctx) => {
+  try {
+    const gameId = ctx.match[1];
+
+    const activeGame = await ObrGame.findById(gameId);
+    if (!activeGame || activeGame.sponsorId !== ctx.from.id) {
+      return ctx.reply('Гру не знайдено або ви не маєте прав для її скасування.');
+    }
+
+    await disableGame(activeGame, CANCELLED);
+
+    ctx.editMessageText(`Гра "${activeGame.name}" була скасована.`);
+  } catch (error) {
+    console.error('Помилка при скасуванні гри:', error);
+    ctx.reply('Не вдалося скасувати гру. Спробуйте пізніше.');
   }
 });
 
@@ -122,7 +229,13 @@ bot.on('text', async (ctx) => {
 
     session.name = ctx.message.text;
     session.step = 'awaiting_start_date';
-    return ctx.reply('Вкажіть дату та час початку гри (формат: YYYY-MM-DD HH:MM):');
+    const nowPlusOneHour = moment.tz(userTimeZone).add(1, 'hour').format('YYYY-MM-DD HH:mm');
+    return ctx.reply(
+        `Вкажіть дату та час початку гри (формат: YYYY-MM-DD HH:MM).  
+Наприклад: <code>${nowPlusOneHour}</code>`,
+        { parse_mode: 'HTML' }
+    );
+
   }
 
   if (session.step === 'awaiting_start_date') {
@@ -166,7 +279,6 @@ bot.on('text', async (ctx) => {
       duration: session.duration,
       prize,
       status: CREATED,
-      rounds: session.duration/MINUTES_INTERVAL
     });
     delete userSessions[userId];
 
@@ -187,6 +299,24 @@ bot.on('text', async (ctx) => {
         resize_keyboard: true
       }
     });
+  }
+});
+
+bot.on('edited_message', (ctx) => {
+  if (ctx.editedMessage.location) {
+    const userId = ctx.editedMessage.from.id;
+    const newLocation = {
+      latitude: ctx.editedMessage.location.latitude,
+      longitude: ctx.editedMessage.location.longitude
+    };
+
+    if (
+      !userLocations[userId] ||
+      userLocations[userId].latitude !== newLocation.latitude ||
+      userLocations[userId].longitude !== newLocation.longitude
+    ) {
+      userLocations[userId] = newLocation;
+    }
   }
 });
 
@@ -211,20 +341,61 @@ bot.command("join", async (ctx) => {
 });
 
 async function handleJoinGame(ctx, gameId) {
-  const game = await ObrGame.findById(gameId);
-  if (!game) return ctx.reply("Гру не знайдено.");
+  try {
+    const userId = ctx.from.id;
 
-  if (game.sponsorId === ctx.from.id) {
-    return ctx.reply("Організатор не може брати участь як мисливець.");
+    const existingGameAsHunter = await ObrGame.findOne({
+      hunters: { $elemMatch: { $eq: userId } },
+      status: { $in: ['created', 'processed'] },
+    });
+
+    if (existingGameAsHunter) {
+      return ctx.reply("Ви вже берете участь в іншій активній грі. Ви не можете доєднатися до нової гри, поки попередня не завершена.");
+    }
+
+    const existingGameAsSponsor = await ObrGame.findOne({
+      sponsorId: userId,
+      status: { $in: ['created', 'processed'] },
+    });
+
+    if (existingGameAsSponsor) {
+      return ctx.reply("Ви вже організували активну гру. Ви не можете долучитися до іншої гри, поки ваша гра не завершена.");
+    }
+
+    const game = await ObrGame.findById(gameId);
+    if (!game) return ctx.reply("Гру не знайдено.");
+
+    if (game.sponsorId === userId) {
+      return ctx.reply("Організатор не може брати участь як мисливець.");
+    }
+
+    if (!game.hunters.includes(userId)) {
+      game.hunters.push(userId);
+      await game.save();
+    }
+
+    ctx.reply("Ви успішно доєдналися до гри!");
+
+  } catch (error) {
+    console.error("Помилка при доєднанні до гри:", error);
+    ctx.reply("Сталася помилка. Спробуйте ще раз пізніше.");
   }
-
-  if (!game.hunters.includes(ctx.from.id)) {
-    game.hunters.push(ctx.from.id);
-    await game.save();
-  }
-
-  ctx.reply("Ви успішно доєдналися до гри!");
 }
+
+async function disableGame(game, result) {
+  if (!game) {
+    throw new Error("Game object is required");
+  }
+
+  game.status = ENDED;
+  game.result = result;
+  game.sponsorId = 1;
+  game.hunters = [];
+
+  await game.save();
+  return game;
+}
+
 
 cron.schedule('* * * * *', async () => {
   const now = moment.tz(userTimeZone).toDate();
@@ -248,9 +419,7 @@ cron.schedule('* * * * *', async () => {
 
   for (let game of activeGames) {
     if (game.endDate <= now) {
-      game.status = ENDED;
-      game.result = SPONSOR_WIN;
-      await game.save();
+      await disableGame(game, SPONSOR_WIN);
       endGame(game);
       continue;
     }
@@ -269,9 +438,7 @@ async function sendSponsorLocation(game) {
   const sponsorLocation = userLocations[game.sponsorId];
 
   if (!sponsorLocation) {
-    game.status = ENDED;
-    game.result = DISQUALIFICATION;
-    await game.save();
+    await disableGame(game, DISQUALIFICATION);
     endGameDueToDisqualification(game);
     return false;
   }
