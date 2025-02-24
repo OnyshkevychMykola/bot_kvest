@@ -316,7 +316,6 @@ bot.on('edited_message', (ctx) => {
       userLocations[userId].longitude !== newLocation.longitude
     ) {
       userLocations[userId] = newLocation;
-      console.log(`🔄 Локація користувача ${userId} оновлена:`, newLocation);
     }
   }
 });
