@@ -3,81 +3,19 @@ const cron = require('node-cron');
 const { Telegraf, Markup} = require('telegraf');
 const mongoose = require('mongoose');
 const moment = require('moment-timezone');
+const { GAME_STATUSES, botName, GAME_RESULTS, token, dbUri, MINUTES_INTERVAL, userTimeZone, HELP_TEXT} = require('./obrgame/constants');
+const { updateUserLocation, disableGame, getUserLocation } = require('./obrgame/services/location');
+const {
+  hasActiveGameAsSponsor, hasActiveGameAsHunter, getActiveGame, getPlannedGame, getGameById,
+  getCreatedGame, handleJoinGame, createGame, getProcessedGame
+} = require('./obrgame/services/games');
+const { updateUserSession, getUserSession, deleteUserSession } = require('./obrgame/services/session');
 
-const token = process.env.BOT_TOKEN;
-const dbUri = process.env.MONGO_URI;
-const botName = process.env.BOT_USERNAME;
-const userTimeZone = 'Europe/Kyiv';
-const MINUTES_INTERVAL = 5;
-
-const GAME_STATUSES = {
-  CREATED: 'created',
-  ENDED: 'ended',
-  PROCESSED: 'processed',
-}
-
-const GAME_RESULTS = {
-  HUNTERS_WIN: 'hunters-win',
-  SPONSOR_WIN: 'sponsor-win',
-  DISQUALIFICATION: 'sponsor-disqualified',
-  CANCELLED: 'cancelled',
-}
-
-const { CREATED, ENDED, PROCESSED} = GAME_STATUSES;
+const { PROCESSED } = GAME_STATUSES;
 const { HUNTERS_WIN, DISQUALIFICATION, SPONSOR_WIN, CANCELLED } = GAME_RESULTS;
 
 const bot = new Telegraf(token);
 mongoose.connect(dbUri);
-
-const ObrGame = mongoose.model('ObrGame', new mongoose.Schema({
-  sponsorId: { type: Number, required: true },
-  name: { type: String, required: true, maxlength: 20 },
-  startDate: { type: Date, required: true },
-  endDate: { type: Date, required: false },
-  duration: { type: Number, required: true, min: 30, max: 120 },
-  prize: { type: Number, required: true, min: 50, max: 1000 },
-  hunters: { type: [Number], default: [] },
-  createdAt: { type: Date, default: Date.now },
-  status: { type: String, required: true, maxlength: 20 },
-  result: { type: String, required: false, maxlength: 20 },
-  currentRound: { type: Number, default: 0 },
-}));
-
-const UserLocation = mongoose.model('UserLocation', new mongoose.Schema({
-  userId: { type: Number, required: true, unique: true },
-  latitude: { type: Number, required: true },
-  longitude: { type: Number, required: true },
-  updatedAt: { type: Date, default: Date.now }
-}));
-
-const UserSession = mongoose.model('UserSession', new mongoose.Schema({
-  userId: { type: Number, required: true, unique: true },
-  step: { type: String, required: true },
-  sponsorId: { type: Number },
-  name: { type: String },
-  startDate: { type: Date },
-  duration: { type: Number },
-  prize: { type: Number },
-  createdAt: { type: Date, default: Date.now },
-  updatedAt: { type: Date, default: Date.now }
-}));
-
-async function updateUserSession(userId, data) {
-  await UserSession.findOneAndUpdate(
-    { userId },
-    { ...data, updatedAt: new Date() },
-    { upsert: true, new: true }
-  );
-}
-
-async function getUserSession(userId) {
-  return await UserSession.findOne({ userId });
-}
-
-async function deleteUserSession(userId) {
-  await UserSession.deleteOne({ userId });
-}
-
 
 bot.telegram.setMyCommands([
   { command: 'caught', description: 'Позначити себе як спійманого' },
@@ -97,39 +35,18 @@ bot.start(async (ctx) => {
 });
 
 bot.hears('/help', (ctx) => {
-  ctx.reply(`
-🕵️‍♂️ *Правила гри:*
-- Гравці діляться на *спонсора (С)* і *мисливців (М)*.
-- 🎯 *Завдання:*  
-  - *С* має протриматись до кінця часу, уникаючи спіймання.  
-  - *М* повинні спіймати *С*, доторкнувшись його тіла або одягу.  
-- 📍 *Кожні 5 хв* *С* надсилає свою локацію через Telegram.  
-- 🚫 Заборонено ховатись у місцях без доступу для мисливців (під’їзди з домофоном, приватні приміщення тощо).  
-- 🚶‍♂️ Використання транспорту *заборонено*, тільки пересування пішки.  
-- ❌ *Дискваліфікація*, якщо *С* не надсилає локацію або виходить за межі обговорені до гри.  
-- 🏆 Приз отримує той, хто спіймав *С*.  
-  `, { parse_mode: 'Markdown' });
+  ctx.reply(HELP_TEXT, { parse_mode: 'Markdown' });
 });
 
 bot.command('create_obrgame', async (ctx) => {
   try {
     const userId = ctx.from.id;
 
-    const existingGameAsSponsor = await ObrGame.findOne({
-      sponsorId: userId,
-      status: { $in: ['created', 'processed'] },
-    });
-
-    if (existingGameAsSponsor) {
+    if (await hasActiveGameAsSponsor(userId)) {
       return ctx.reply('Ви вже створили гру, яка ще не завершена. Ви не можете створити нову гру, поки попередня не буде завершена.');
     }
 
-    const existingGameAsHunter = await ObrGame.findOne({
-      hunters: { $elemMatch: { $eq: userId } },
-      status: { $in: ['created', 'processed'] },
-    });
-
-    if (existingGameAsHunter) {
+    if (await hasActiveGameAsHunter(userId)) {
       return ctx.reply('Ви вже берете участь в іншій активній грі як мисливець. Ви не можете створити нову гру, поки не завершите поточну.');
     }
 
@@ -144,10 +61,7 @@ bot.command('create_obrgame', async (ctx) => {
 
 bot.command("caught", async (ctx) => {
   const sponsorId = ctx.from.id;
-  const activeGame = await ObrGame.findOne({
-    sponsorId,
-    status: PROCESSED,
-  });
+  const activeGame = await getActiveGame(sponsorId);
 
   if (!activeGame) {
     return ctx.reply("Ви не є спонсором активної гри або гра вже завершена.");
@@ -172,12 +86,7 @@ bot.command('planned_game', async (ctx) => {
   try {
     const userId = ctx.from.id;
 
-    const activeGame = await ObrGame.findOne({
-      $or: [
-        { sponsorId: userId, status: 'created' },
-        { hunters: { $elemMatch: { $eq: userId } }, status: 'created' }
-      ]
-    });
+    const activeGame = await getPlannedGame(userId);
 
     if (!activeGame) {
       return ctx.reply('У вас немає запланованих ігор.');
@@ -212,7 +121,7 @@ bot.action(/^leave_game_(.*)$/, async (ctx) => {
     const gameId = ctx.match[1];
     const userId = ctx.from.id;
 
-    const activeGame = await ObrGame.findById(gameId);
+    const activeGame = await getGameById(gameId);
     if (!activeGame) {
       return ctx.reply('Гра не знайдена.');
     }
@@ -236,7 +145,7 @@ bot.action(/^cancel_game_(.*)$/, async (ctx) => {
   try {
     const gameId = ctx.match[1];
 
-    const activeGame = await ObrGame.findById(gameId);
+    const activeGame = await getGameById(gameId);
     if (!activeGame || activeGame.sponsorId !== ctx.from.id) {
       return ctx.reply('Гру не знайдено або ви не маєте прав для її скасування.');
     }
@@ -302,14 +211,8 @@ bot.on('text', async (ctx) => {
       return ctx.reply('Невірна сума. Вкажіть число від 50 до 1000, кратне 50 грн');
     }
 
-    const game = await ObrGame.create({
-      sponsorId: session.sponsorId,
-      name: session.name,
-      startDate: session.startDate,
-      duration: session.duration,
-      prize,
-      status: CREATED,
-    });
+    const { sponsorId, name, startDate, duration } = session;
+    const game = await createGame({ sponsorId, name, startDate, duration, prize});
     await deleteUserSession(userId);
 
     const inviteLink = `https://t.me/${botName}?start=join_${game._id}`;
@@ -331,14 +234,6 @@ bot.on('text', async (ctx) => {
     });
   }
 });
-
-async function updateUserLocation(userId, latitude, longitude) {
-  await UserLocation.findOneAndUpdate(
-    { userId },
-    { latitude, longitude, updatedAt: new Date() },
-    { upsert: true, new: true }
-  );
-}
 
 bot.on('edited_message', async (ctx) => {
   if (ctx.editedMessage.location) {
@@ -367,78 +262,10 @@ bot.command("join", async (ctx) => {
   await handleJoinGame(ctx, gameId);
 });
 
-async function handleJoinGame(ctx, gameId) {
-  try {
-    const userId = ctx.from.id;
-
-    const existingGameAsHunter = await ObrGame.findOne({
-      hunters: { $elemMatch: { $eq: userId } },
-      status: { $in: ['created', 'processed'] },
-    });
-
-    if (existingGameAsHunter) {
-      return ctx.reply("Ви вже берете участь в іншій активній грі. Ви не можете доєднатися до нової гри, поки попередня не завершена.");
-    }
-
-    const existingGameAsSponsor = await ObrGame.findOne({
-      sponsorId: userId,
-      status: { $in: ['created', 'processed'] },
-    });
-
-    if (existingGameAsSponsor) {
-      return ctx.reply("Ви вже організували активну гру. Ви не можете долучитися до іншої гри, поки ваша гра не завершена.");
-    }
-
-    const game = await ObrGame.findById(gameId);
-    if (!game) return ctx.reply("Гру не знайдено.");
-
-    if (game.sponsorId === userId) {
-      return ctx.reply("Організатор не може брати участь як мисливець.");
-    }
-
-    if (!game.hunters.includes(userId)) {
-      game.hunters.push(userId);
-      await game.save();
-    }
-
-    ctx.reply("Ви успішно доєдналися до гри!");
-
-  } catch (error) {
-    console.error("Помилка при доєднанні до гри:", error);
-    ctx.reply("Сталася помилка. Спробуйте ще раз пізніше.");
-  }
-}
-
-async function disableGame(game, result) {
-  if (!game) {
-    throw new Error("Game object is required");
-  }
-
-  if (game.sponsorId) {
-    try {
-      await UserLocation.deleteOne({ userId: game.sponsorId });
-    } catch (error) {
-      console.error(`❌ Помилка при видаленні локації спонсора ${game.sponsorId}:`, error);
-    }
-  }
-
-  game.status = ENDED;
-  game.result = result;
-  game.sponsorId = 1;
-  game.hunters = [];
-
-  await game.save();
-  return game;
-}
-
-
 cron.schedule('* * * * *', async () => {
   const now = moment.tz(userTimeZone).toDate();
 
-  const gamesToStart = await ObrGame.find({
-    startDate: { $lte: now },
-    status: CREATED
-  });
+  const gamesToStart = await getCreatedGame(now);
   for (let game of gamesToStart) {
     game.status = PROCESSED;
     game.endDate = moment.tz(game.startDate, userTimeZone).add(game.duration, "minutes").toDate();
@@ -450,7 +277,7 @@ cron.schedule('* * * * *', async () => {
     }
   }
 
-  const activeGames = await ObrGame.find({ status: PROCESSED });
+  const activeGames = await getProcessedGame();
 
   for (let game of activeGames) {
     if (game.endDate <= now) {
@@ -470,7 +297,7 @@ cron.schedule('* * * * *', async () => {
 });
 
 async function sendSponsorLocation(game) {
-  const sponsorLocation = await UserLocation.findOne({ userId: game.sponsorId });
+  const sponsorLocation = await getUserLocation(game.sponsorId);
 
   if (!sponsorLocation) {
     await disableGame(game, DISQUALIFICATION);
