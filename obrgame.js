@@ -43,8 +43,41 @@ const ObrGame = mongoose.model('ObrGame', new mongoose.Schema({
   currentRound: { type: Number, default: 0 },
 }));
 
-const userSessions = {};
-const userLocations = {};
+const UserLocation = mongoose.model('UserLocation', new mongoose.Schema({
+  userId: { type: Number, required: true, unique: true },
+  latitude: { type: Number, required: true },
+  longitude: { type: Number, required: true },
+  updatedAt: { type: Date, default: Date.now }
+}));
+
+const UserSession = mongoose.model('UserSession', new mongoose.Schema({
+  userId: { type: Number, required: true, unique: true },
+  step: { type: String, required: true },
+  sponsorId: { type: Number },
+  name: { type: String },
+  startDate: { type: Date },
+  duration: { type: Number },
+  prize: { type: Number },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+}));
+
+async function updateUserSession(userId, data) {
+  await UserSession.findOneAndUpdate(
+    { userId },
+    { ...data, updatedAt: new Date() },
+    { upsert: true, new: true }
+  );
+}
+
+async function getUserSession(userId) {
+  return await UserSession.findOne({ userId });
+}
+
+async function deleteUserSession(userId) {
+  await UserSession.deleteOne({ userId });
+}
+
 
 bot.telegram.setMyCommands([
   { command: 'caught', description: 'Позначити себе як спійманого' },
@@ -100,8 +133,8 @@ bot.command('create_obrgame', async (ctx) => {
       return ctx.reply('Ви вже берете участь в іншій активній грі як мисливець. Ви не можете створити нову гру, поки не завершите поточну.');
     }
 
+    await updateUserSession(userId, { step: 'awaiting_obrgame_name', sponsorId: userId });
     ctx.reply('Введіть назву гри (не більше 20 символів):');
-    userSessions[userId] = { step: 'awaiting_obrgame_name', sponsorId: userId };
 
   } catch (error) {
     console.error('Помилка при перевірці наявних ігор:', error);
@@ -219,7 +252,7 @@ bot.action(/^cancel_game_(.*)$/, async (ctx) => {
 
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
-  const session = userSessions[userId];
+  const session = await getUserSession(userId);
   if (!session) return;
 
   if (session.step === 'awaiting_obrgame_name') {
@@ -227,8 +260,7 @@ bot.on('text', async (ctx) => {
       return ctx.reply('Назва гри має бути не довше 20 символів! Введіть іншу:');
     }
 
-    session.name = ctx.message.text;
-    session.step = 'awaiting_start_date';
+   await updateUserSession(userId, { name: ctx.message.text, step: 'awaiting_start_date' });
     const nowPlusOneHour = moment.tz(userTimeZone).add(1, 'hour').format('YYYY-MM-DD HH:mm');
     return ctx.reply(
         `Вкажіть дату та час початку гри (формат: YYYY-MM-DD HH:MM).  
@@ -251,8 +283,7 @@ bot.on('text', async (ctx) => {
     if (date.isBefore(moment())) {
       return ctx.reply('Дата вже минула. Введіть майбутній час.');
     }
-    session.startDate = date;
-    session.step = 'awaiting_duration';
+    await updateUserSession(userId, { startDate: date, step: 'awaiting_duration' });
     return ctx.reply('Вкажіть тривалість гри (від 30 до 120 хв, кратно 10 хв):');
   }
 
@@ -261,8 +292,7 @@ bot.on('text', async (ctx) => {
     if (isNaN(duration) || duration < 30 || duration > 120 || duration % 10 !== 0) {
       return ctx.reply('Невірна тривалість. Вкажіть число від 30 до 120, кратне 10 хв');
     }
-    session.duration = duration;
-    session.step = 'awaiting_prize';
+    await updateUserSession(userId, { duration, step: 'awaiting_prize' });
     return ctx.reply('Вкажіть суму призу (від 50 до 1000 грн, кратно 50 грн):');
   }
 
@@ -280,7 +310,7 @@ bot.on('text', async (ctx) => {
       prize,
       status: CREATED,
     });
-    delete userSessions[userId];
+    await deleteUserSession(userId);
 
     const inviteLink = `https://t.me/${botName}?start=join_${game._id}`;
     ctx.reply(
@@ -302,32 +332,29 @@ bot.on('text', async (ctx) => {
   }
 });
 
-bot.on('edited_message', (ctx) => {
+async function updateUserLocation(userId, latitude, longitude) {
+  await UserLocation.findOneAndUpdate(
+    { userId },
+    { latitude, longitude, updatedAt: new Date() },
+    { upsert: true, new: true }
+  );
+}
+
+bot.on('edited_message', async (ctx) => {
   if (ctx.editedMessage.location) {
     const userId = ctx.editedMessage.from.id;
-    const newLocation = {
-      latitude: ctx.editedMessage.location.latitude,
-      longitude: ctx.editedMessage.location.longitude
-    };
+    const { latitude, longitude } = ctx.editedMessage.location;
 
-    if (
-      !userLocations[userId] ||
-      userLocations[userId].latitude !== newLocation.latitude ||
-      userLocations[userId].longitude !== newLocation.longitude
-    ) {
-      userLocations[userId] = newLocation;
-    }
+    await updateUserLocation(userId, latitude, longitude);
+    console.log(`🔄 Локація користувача ${userId} оновлена:`, { latitude, longitude });
   }
 });
 
-bot.on('location', (ctx) => {
+bot.on('location', async (ctx) => {
   const userId = ctx.from.id;
-  const location = ctx.message.location;
+  const { latitude, longitude } = ctx.message.location;
 
-  userLocations[userId] = {
-    latitude: location.latitude,
-    longitude: location.longitude
-  };
+  await updateUserLocation(userId, latitude, longitude);
 
   ctx.reply('✅ Ваша геолокація отримана! Ми будемо оновлювати ваше місцезнаходження кожні 5 хвилин.');
 });
@@ -387,6 +414,14 @@ async function disableGame(game, result) {
     throw new Error("Game object is required");
   }
 
+  if (game.sponsorId) {
+    try {
+      await UserLocation.deleteOne({ userId: game.sponsorId });
+    } catch (error) {
+      console.error(`❌ Помилка при видаленні локації спонсора ${game.sponsorId}:`, error);
+    }
+  }
+
   game.status = ENDED;
   game.result = result;
   game.sponsorId = 1;
@@ -435,7 +470,7 @@ cron.schedule('* * * * *', async () => {
 });
 
 async function sendSponsorLocation(game) {
-  const sponsorLocation = userLocations[game.sponsorId];
+  const sponsorLocation = await UserLocation.findOne({ userId: game.sponsorId });
 
   if (!sponsorLocation) {
     await disableGame(game, DISQUALIFICATION);
