@@ -81,7 +81,11 @@ module.exports.handleJoinGame = async function handleJoinGame(ctx, gameId) {
       return ctx.reply("Ви вже організували активну гру. Ви не можете долучитися до іншої гри, поки ваша гра не завершена.");
     }
 
-    const game = await ObrGame.findById(gameId);
+    const game = await ObrGame.findOne({
+      _id: gameId,
+      status: 'created',
+    });
+
     if (!game) return ctx.reply("Гру не знайдено.");
 
     if (game.sponsorId === userId) {

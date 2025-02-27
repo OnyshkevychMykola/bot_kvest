@@ -210,6 +210,14 @@ cron.schedule('* * * * *', async () => {
 
   const gamesToStart = await getCreatedGame(now);
   for (let game of gamesToStart) {
+    if (!game.hunters || game.hunters.length === 0) {
+      await bot.telegram.sendMessage(
+        game.sponsorId,
+        `Гра ${game.name} не може початись, оскільки не достатньо гравців.`
+      );
+      continue;
+    }
+
     game.status = PROCESSED;
     game.endDate = moment.tz(game.startDate, userTimeZone).add(game.duration, "minutes").toDate();
     game.currentRound = 1;
