@@ -32,3 +32,14 @@ module.exports.UserSession = mongoose.model('UserSession', new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 }));
+
+module.exports.Log = mongoose.model("Log", new mongoose.Schema({
+  method: String,
+  gameId: String,
+  sponsorId: Number,
+  location: {
+    latitude: Number,
+    longitude: Number,
+  },
+  timestamp: { type: Date, default: Date.now },
+}));

@@ -215,6 +215,7 @@ cron.schedule('* * * * *', async () => {
         game.sponsorId,
         `Гра ${game.name} не може початись, оскільки не достатньо гравців.`
       );
+      await disableGame(game, CANCELLED);
       continue;
     }
 
@@ -232,8 +233,8 @@ cron.schedule('* * * * *', async () => {
 
   for (let game of activeGames) {
     if (game.endDate <= now) {
-      await disableGame(game, SPONSOR_WIN);
       endGame(game, bot.telegram);
+      await disableGame(game, CANCELLED);
       continue;
     }
 

@@ -1,5 +1,6 @@
 const { getUserLocation, disableGame } = require('./services/location');
 const { GAME_RESULTS } = require('./constants');
+const {Log} = require("./models");
 
 const { DISQUALIFICATION } = GAME_RESULTS;
 
@@ -19,6 +20,17 @@ async function sendSponsorLocation(game, bot) {
       `📍 Спонсор зараз знаходиться тут!\nПродовжуйте пошуки!`
     );
   }
+
+  await Log.create({
+    method: "sendSponsorLocation",
+    gameId: String(game._id),
+    sponsorId:  Number(game.sponsorId),
+    location: {
+      latitude: Number(sponsorLocation.latitude),
+      longitude: Number(sponsorLocation.longitude),
+    },
+    timestamp: new Date(),
+  });
 
   return true;
 }
