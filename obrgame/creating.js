@@ -72,7 +72,7 @@ function parseDate(text) {
 }
 
 function isValidDuration(duration) {
-  return !isNaN(duration) && duration >= 30 && duration <= 120 && duration % 10 === 0;
+  return !isNaN(duration) && duration >= 2 && duration <= 120 && duration % 2 === 0;
 }
 
 function isValidPrize(prize) {
