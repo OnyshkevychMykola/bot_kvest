@@ -69,8 +69,6 @@ bot.command("caught", async (ctx) => {
     return ctx.reply("Ви не є спонсором активної гри або гра вже завершена.");
   }
 
-  await disableGame(activeGame, HUNTERS_WIN);
-
   bot.telegram.sendMessage(
     sponsorId,
     `❌ Ви спіймані! Гра "${activeGame.name}" завершилася перемогою мисливців.`
@@ -82,6 +80,8 @@ bot.command("caught", async (ctx) => {
       `🏆 Вітаємо! Ви спіймали спонсора у грі "${activeGame.name}". Перемога за мисливцями!`
     );
   }
+
+  await disableGame(activeGame, HUNTERS_WIN);
 });
 
 bot.command('planned_game', async (ctx) => {
@@ -152,9 +152,8 @@ bot.action(/^cancel_game_(.*)$/, async (ctx) => {
       return ctx.reply('Гру не знайдено або ви не маєте прав для її скасування.');
     }
 
-    await disableGame(activeGame, CANCELLED);
-
     ctx.editMessageText(`Гра "${activeGame.name}" була скасована.`);
+    await disableGame(activeGame, CANCELLED);
   } catch (error) {
     console.error('Помилка при скасуванні гри:', error);
     ctx.reply('Не вдалося скасувати гру. Спробуйте пізніше.');
@@ -243,7 +242,7 @@ cron.schedule('* * * * *', async () => {
     if (nextRoundTime <= now) {
       game.currentRound += 1;
       await game.save();
-      sendSponsorLocation(game, bot.telegram);
+      sendSponsorLocation(game, bot.telegram, now);
     }
   }
 });

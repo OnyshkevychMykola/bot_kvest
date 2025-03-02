@@ -4,12 +4,12 @@ const {Log} = require("./models");
 
 const { DISQUALIFICATION } = GAME_RESULTS;
 
-async function sendSponsorLocation(game, bot) {
+async function sendSponsorLocation(game, bot, now) {
   const sponsorLocation = await getUserLocation(game.sponsorId);
 
-  if (!sponsorLocation) {
-    await disableGame(game, DISQUALIFICATION);
+  if (!sponsorLocation || (sponsorLocation?.updatedAt && (now - new Date(sponsorLocation.updatedAt)) > 60000)) {
     endGameDueToDisqualification(game, bot);
+    await disableGame(game, DISQUALIFICATION);
     return false;
   }
 
