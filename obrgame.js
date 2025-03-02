@@ -234,7 +234,7 @@ cron.schedule('* * * * *', async () => {
   for (let game of activeGames) {
     if (game.endDate <= now) {
       endGame(game, bot.telegram);
-      await disableGame(game, CANCELLED);
+      await disableGame(game, SPONSOR_WIN);
       continue;
     }
 
