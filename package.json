@@ -6,7 +6,7 @@
   "scripts": {
     "dev:obrgame": "nodemon obrgame.js",
     "start": "node obrgame.js",
-    "build": "npm prune && npm ci"
+    "build": "npm ci"
   },
   "author": "",
   "license": "ISC",
