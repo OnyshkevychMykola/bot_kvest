@@ -6,7 +6,8 @@
   "scripts": {
     "dev:kvest": "nodemon index.js",
     "dev:obrgame": "nodemon obrgame.js",
-    "start": "node index.js"
+    "start": "node index.js",
+    "build": "npm prune && npm ci"
   },
   "author": "",
   "license": "ISC",
